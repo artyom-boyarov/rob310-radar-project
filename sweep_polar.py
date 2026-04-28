@@ -2,6 +2,10 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 import numpy as np
 import cv2
+import warnings
+
+# Silence PyQtGraph's internal math warnings on empty arrays
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 # --- Configuration ---
 NUM_RANGE_BINS = 500
@@ -18,31 +22,74 @@ polar_data = np.zeros((NUM_ANGLES, NUM_RANGE_BINS), dtype=np.float32)
 # --- PyQtGraph Setup ---
 app = pg.mkQApp()
 plt = pg.plot(title="Phased Array FMCW Radar (-45° to +45°)")
+plt.setBackground((68, 1, 84))  # Match Viridis 0-value (dark purple)
 plt.setAspectLocked(True)
-plt.setXRange(-NUM_RANGE_BINS, NUM_RANGE_BINS)
-plt.setYRange(-NUM_RANGE_BINS, NUM_RANGE_BINS)
+
+# Hide the default Cartesian X and Y axes
+plt.hideAxis('left')
+plt.hideAxis('bottom')
+
+plt.setXRange(-400, 400, padding=0)
+plt.setYRange(0, 550, padding=0)
+plt.setLimits(xMin=-400, xMax=400, yMin=0, yMax=550)
 
 # Create a blank image to initialize dimensions, using row-major to sync with OpenCV
 blank_image = np.zeros((CARTESIAN_SIZE, CARTESIAN_SIZE))
-imageItem = pg.ImageItem(blank_image, axisOrder='row-major')
+imageItem = pg.ImageItem(blank_image, axisOrder='row-major', levels=(0, 255))
 imageItem.setRect(QtCore.QRectF(-NUM_RANGE_BINS, -NUM_RANGE_BINS, CARTESIAN_SIZE, CARTESIAN_SIZE))
 plt.addItem(imageItem)
 plt.addColorBar(imageItem, colorMap='viridis', values=(0, 255))
 
-# Draw physical range rings (light gray)
-for r in range(100, NUM_RANGE_BINS + 1, 100):
-    circle = QtWidgets.QGraphicsEllipseItem(-r, -r, 2 * r, 2 * r)
-    circle.setPen(pg.mkPen((150, 150, 150, 100)))
-    plt.addItem(circle)
+grid_pen = pg.mkPen(color=(255, 255, 255, 255), width=2.5)
+
+arc_angles = np.linspace(np.radians(MIN_ANGLE), np.radians(MAX_ANGLE), 100)
+# Draw physical range arcs with higher precision (every 50 units)
+for r in range(50, NUM_RANGE_BINS + 1, 50):
+    x = r * np.sin(arc_angles)
+    y = r * np.cos(arc_angles)
+    arc_item = pg.PlotCurveItem(x, y, pen=grid_pen)
+    arc_item.setZValue(100)
+    plt.addItem(arc_item)
+
+    # Distance labels on the left edge (-45 deg)
+    text_left = pg.TextItem(f"{r}", color=(200, 200, 200), anchor=(1.1, 0.5))
+    text_left.setPos(r * np.sin(np.radians(MIN_ANGLE)), r * np.cos(np.radians(MIN_ANGLE)))
+    text_left.setZValue(100)
+    plt.addItem(text_left)
+
+    # Distance labels on the right edge (+45 deg)
+    text_right = pg.TextItem(f"{r}", color=(200, 200, 200), anchor=(-0.1, 0.5))
+    text_right.setPos(r * np.sin(np.radians(MAX_ANGLE)), r * np.cos(np.radians(MAX_ANGLE)))
+    text_right.setZValue(100)
+    plt.addItem(text_right)
 
 # Draw dashed boundary lines for the -45 and +45 degree limits
-bound_pen = pg.mkPen((150, 150, 150, 150), style=QtCore.Qt.DashLine)
+bound_pen = pg.mkPen(color=(255, 255, 255, 255), width=2.5, style=QtCore.Qt.PenStyle.DashLine)
 for angle in [MIN_ANGLE, MAX_ANGLE]:
     rad = np.radians(angle)
     # Using the "Top = 0" convention (sin for x, cos for y)
     x = NUM_RANGE_BINS * np.sin(rad)
     y = NUM_RANGE_BINS * np.cos(rad)
-    plt.plot([0, x], [0, y], pen=bound_pen)
+    line_item = plt.plot([0, x], [0, y], pen=bound_pen)
+    line_item.setZValue(100)
+
+# Draw internal angle marks and text labels every 15 degrees
+for angle in range(MIN_ANGLE, MAX_ANGLE + 1, 15):
+    rad = np.radians(angle)
+    x_outer = NUM_RANGE_BINS * np.sin(rad)
+    y_outer = NUM_RANGE_BINS * np.cos(rad)
+
+    # Draw faint radial lines for the intermediate angles
+    if angle not in [MIN_ANGLE, MAX_ANGLE]:
+        faint_pen = pg.mkPen(color=(255, 255, 255, 100), width=1, style=QtCore.Qt.PenStyle.DotLine)
+        line = plt.plot([0, x_outer], [0, y_outer], pen=faint_pen)
+        line.setZValue(90)
+
+    # Add angle text label just outside the max radius rim
+    text_angle = pg.TextItem(f"{angle}°", color=(255, 255, 255), anchor=(0.5, 0.5))
+    text_angle.setPos((NUM_RANGE_BINS + 25) * np.sin(rad), (NUM_RANGE_BINS + 25) * np.cos(rad))
+    text_angle.setZValue(100)
+    plt.addItem(text_angle)
 
 beam_line = plt.plot(pen=pg.mkPen('r', width=2))
 
@@ -94,12 +141,12 @@ def update():
         dsize=(CARTESIAN_SIZE, CARTESIAN_SIZE),
         center=(NUM_RANGE_BINS, NUM_RANGE_BINS),
         maxRadius=NUM_RANGE_BINS,
-        flags=cv2.WARP_INVERSE_MAP | cv2.INTER_LINEAR
+        flags=cv2.WARP_INVERSE_MAP | cv2.INTER_LINEAR | cv2.WARP_FILL_OUTLIERS
     )
 
 
     # 4. Update the GUI
-    imageItem.setImage(cartesian_image, autoLevels=False)
+    imageItem.setImage(cartesian_image, autoLevels=False, levels=(0, 255))
 
     # 5. Update the red sweep line visual
     rad = np.radians(current_angle_deg)
